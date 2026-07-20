@@ -1,0 +1,11 @@
+# Local environment variables
+.env
+.env.local
+.env.production
+.env.development
+
+# Standard system and dependency files
+node_modules/
+.next/
+dist/
+.vercel
