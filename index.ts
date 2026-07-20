@@ -784,6 +784,120 @@ async function run() {
             }
         });
 
+        // ==========================================
+        // 2. REVIEWS API
+        // ==========================================
+
+        // CREATE: Add a review and update scholarship rating
+        app.post('/reviews',
+            verifyToken,
+            async (req: AuthenticatedRequest, res: Response): Promise<any> => {
+                try {
+                    const { scholarshipId, rating, review } = req.body;
+                    const userId = req.user?.id;
+
+                    if (!scholarshipId || !rating || !userId) {
+                        return res.status(400).json({ message: "Missing required fields" });
+                    }
+
+                    if (!ObjectId.isValid(scholarshipId)) {
+                        return res.status(400).json({ message: "Invalid scholarshipId format." });
+                    }
+
+                    const safeUserId = ObjectId.isValid(userId) ? new ObjectId(userId) : userId;
+
+                    // Optional: Prevent duplicate reviews by the same user on this scholarship
+                    const existingReview = await reviewsCollection.findOne({
+                        userId: safeUserId,
+                        scholarshipId: new ObjectId(scholarshipId)
+                    });
+                    if (existingReview) {
+                        return res.status(409).json({ message: "You already reviewed this scholarship" });
+                    }
+
+                    const newReview = {
+                        scholarshipId: new ObjectId(scholarshipId),
+                        userId: safeUserId,
+                        rating: Number(rating),
+                        review,
+                        createdAt: new Date()
+                    };
+
+                    const result = await reviewsCollection.insertOne(newReview);
+
+                    // Aggregate new average rating and total reviews for the scholarship
+                    const statsPipeline = [
+                        { $match: { scholarshipId: new ObjectId(scholarshipId) } },
+                        {
+                            $group: {
+                                _id: "$scholarshipId",
+                                avgRating: { $avg: "$rating" },
+                                totalReviews: { $sum: 1 }
+                            }
+                        }
+                    ];
+                    const stats = await reviewsCollection.aggregate(statsPipeline).toArray();
+
+                    if (stats.length > 0) {
+                        await scholarshipsCollection.updateOne(
+                            { _id: new ObjectId(scholarshipId) },
+                            {
+                                $set: {
+                                    rating: parseFloat(stats[0].avgRating.toFixed(1)),
+                                    totalReviews: stats[0].totalReviews
+                                }
+                            }
+                        );
+                    }
+
+                    return res.status(201).json(result);
+                } catch (error) {
+                    console.error("Error posting review:", error);
+                    return res.status(500).json({ message: "Internal Server Error" });
+                }
+            }
+        );
+
+        // READ: Get reviews for a specific scholarship
+        app.get('/reviews/:scholarshipId', async (req: Request, res: Response) => {
+            try {
+                const { scholarshipId } = req.params;
+                if (!ObjectId.isValid(scholarshipId)) {
+                    return res.status(400).json({ message: "Invalid scholarship ID" });
+                }
+
+                // Lookup user details to show name/avatar alongside the review
+                const reviews = await reviewsCollection.aggregate([
+                    { $match: { scholarshipId: new ObjectId(scholarshipId) } },
+                    { $sort: { createdAt: -1 } },
+                    {
+                        $lookup: {
+                            from: "user",
+                            localField: "userId",
+                            foreignField: "_id",
+                            as: "author"
+                        }
+                    },
+                    { $unwind: "$author" },
+                    {
+                        $project: {
+                            rating: 1,
+                            review: 1,
+                            createdAt: 1,
+                            "author.name": 1,
+                            "author.image": 1
+                        }
+                    }
+                ]).toArray();
+
+                res.status(200).json(reviews);
+            } catch (error) {
+                console.error("Error fetching reviews:", error);
+                res.status(500).json({ message: "Internal Server Error" });
+            }
+        });
+
+
 
 
         app.get('/', (req: Request, res: Response) => {
