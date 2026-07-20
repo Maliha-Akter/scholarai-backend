@@ -134,19 +134,19 @@ async function run() {
         // ==========================================
 
         app.post('/ai/chat', async (req: Request, res: Response) => {
-    try {
-        const { messages } = req.body;
+            try {
+                const { messages } = req.body;
 
-        if (!messages || !Array.isArray(messages)) {
-            return res.status(400).json({ message: "Invalid request: 'messages' array required" });
-        }
+                if (!messages || !Array.isArray(messages)) {
+                    return res.status(400).json({ message: "Invalid request: 'messages' array required" });
+                }
 
-        // Set up headers for Server-Sent Events (Streaming)
-        res.setHeader('Content-Type', 'text/event-stream');
-        res.setHeader('Cache-Control', 'no-cache');
-        res.setHeader('Connection', 'keep-alive');
+                // Set up headers for Server-Sent Events (Streaming)
+                res.setHeader('Content-Type', 'text/event-stream');
+                res.setHeader('Cache-Control', 'no-cache');
+                res.setHeader('Connection', 'keep-alive');
 
-        const systemPrompt = ` You are ScholarAI Assistant inside the ScholarAI Scholarship Portal.
+                const systemPrompt = ` You are ScholarAI Assistant inside the ScholarAI Scholarship Portal.
 You help users navigate and explore the following application features:
 - Search Scholarships
 - Scholarship Details
@@ -166,35 +166,35 @@ Example structure at the end of your response:
 Your helpful answer here...
 ||| ["Tell me about DAAD", "What are the funding types?", "How do I apply?"]`;
 
-        const completion = await groq.chat.completions.create({
-            model: "llama-3.3-70b-versatile",
-            messages: [
-                {
-                    role: "system",
-                    content: systemPrompt,
-                },
-                ...messages.map((msg: any) => ({
-                    role: msg.role,
-                    content: msg.content
-                }))
-            ],
-            stream: true, // Turn streaming ON
-        });
+                const completion = await groq.chat.completions.create({
+                    model: "llama-3.3-70b-versatile",
+                    messages: [
+                        {
+                            role: "system",
+                            content: systemPrompt,
+                        },
+                        ...messages.map((msg: any) => ({
+                            role: msg.role,
+                            content: msg.content
+                        }))
+                    ],
+                    stream: true, // Turn streaming ON
+                });
 
-        // Write chunks to the response stream as they arrive
-        for await (const chunk of completion) {
-            const text = chunk.choices[0]?.delta?.content || "";
-            res.write(text);
-        }
-        
-        res.end();
-    } catch (error) {
-        console.error("AI Chat Error:", error);
-        res.status(500).json({
-            message: "AI Error: Failed to generate response",
+                // Write chunks to the response stream as they arrive
+                for await (const chunk of completion) {
+                    const text = chunk.choices[0]?.delta?.content || "";
+                    res.write(text);
+                }
+
+                res.end();
+            } catch (error) {
+                console.error("AI Chat Error:", error);
+                res.status(500).json({
+                    message: "AI Error: Failed to generate response",
+                });
+            }
         });
-    }
-});
         // 2. api recommendations engine
         app.get('/api/filters', async (req: Request, res: Response) => {
             try {
@@ -312,15 +312,13 @@ Your helpful answer here...
             verifyToken,
             async (req: AuthenticatedRequest, res: Response) => {
                 try {
-                    // 1. Ensure the user is authenticated (verifyToken should handle this, but just in case)
                     if (!req.user) {
                         return res.status(401).json({ message: "Unauthorized: No user found in session" });
                     }
 
-                    // 2. Fetch the current user from your users table/collection
-                    // Adjust the query based on what verifyToken attaches to req.user (e.g., email or id)
+                    // Look up the user
                     const query = req.user.email
-                        ? { email: req.user.email }
+                        ? { email: { $regex: new RegExp(`^${req.user.email}$`, 'i') } }
                         : { _id: new ObjectId(req.user.id) };
 
                     const currentUser = await usersCollection.findOne(query);
@@ -331,16 +329,12 @@ Your helpful answer here...
 
                     const scholarshipData = req.body;
 
-                    // 3. Set default fields and attach the user ID
                     const newScholarship = {
                         ...scholarshipData,
-
-                        // --- Add the User relations here ---
-                        authorId: currentUser._id,           // The MongoDB ID of the user
-                        authorName: currentUser.name || '',  // Optional: Save name for easier frontend display
-                        authorEmail: currentUser.email,      // Optional
-                        // -----------------------------------
-
+                        // THE FIX: Explicitly convert the ObjectId to a String
+                        authorId: currentUser._id.toString(),
+                        authorName: currentUser.name || '',
+                        authorEmail: currentUser.email.toLowerCase(),
                         rating: scholarshipData.rating || 0,
                         totalReviews: scholarshipData.totalReviews || 0,
                         popularity: scholarshipData.popularity || 0,
@@ -360,23 +354,40 @@ Your helpful answer here...
 
         app.get('/scholarships', async (req: Request, res: Response) => {
             try {
+                // Prevent browser/CDN caching so new posts appear instantly
+                res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+                res.setHeader('Pragma', 'no-cache');
+
+                // Extract query parameters
                 const {
                     page = 1,
-                    limit = 6, // 🐛 Updated limit to 6
-                    country, degree, fundingType, subject, search, sort = 'createdAt',
-                    userId // This is receiving the email from your frontend
+                    limit = 6,
+                    country,
+                    degree,
+                    fundingType,
+                    subject,
+                    search,
+                    sort = 'createdAt',
+                    userId
                 } = req.query;
 
-                const query: any = { isActive: true };
+                // FIX 1: Initialize an empty query object. 
+                // This ensures items with `isActive: false` are no longer hidden.
+                // Note: If you eventually build an admin approval system, change this back to { isActive: true }
+                const query: any = {};
 
+                // Case-insensitive exact match for userId (authorEmail)
                 if (userId) {
-                    query.authorEmail = userId;
+                    query.authorEmail = { $regex: new RegExp(`^${userId}$`, 'i') };
                 }
 
+                // Apply filters
                 if (country) query.country = country;
                 if (degree) query.degree = degree;
                 if (fundingType) query.fundingType = fundingType;
                 if (subject) query.subject = { $in: [subject] };
+
+                // Apply search mapping
                 if (search) {
                     query.$or = [
                         { title: { $regex: search, $options: 'i' } },
@@ -384,14 +395,18 @@ Your helpful answer here...
                     ];
                 }
 
-                let sortObj: any = { createdAt: -1 };
+                // FIX 2: Ensure descending order defaults correctly for new items
+                let sortObj: any = { createdAt: -1 }; // Default to newest first
                 if (sort === 'applicationDeadline') sortObj = { applicationDeadline: 1 };
                 else if (sort === 'popularity') sortObj = { popularity: -1 };
                 else if (sort === 'title') sortObj = { title: 1 };
+                else if (sort === 'createdAt') sortObj = { createdAt: -1 };
 
+                // Pagination math
                 const skip = (Number(page) - 1) * Number(limit);
                 const total = await scholarshipsCollection.countDocuments(query);
 
+                // Fetch from database
                 const scholarships = await scholarshipsCollection
                     .find(query)
                     .sort(sortObj)
@@ -399,18 +414,19 @@ Your helpful answer here...
                     .limit(Number(limit))
                     .toArray();
 
+                // Return successful response
                 res.status(200).json({
                     total,
                     page: Number(page),
                     totalPages: Math.ceil(total / Number(limit)),
                     scholarships
                 });
+
             } catch (error) {
                 console.error("Error fetching scholarships:", error);
                 res.status(500).json({ message: "Internal Server Error" });
             }
         });
-
         // For home page random scholarship recommendations 
         app.get('/api/scholarships/random', async (req: Request, res: Response) => {
             try {
@@ -547,7 +563,7 @@ Your helpful answer here...
                 const related = await scholarshipsCollection
                     .find({
                         _id: { $ne: scholarshipId },
-                        isActive: true,
+                        // isActive: true, // <--- REMOVE THIS LINE
                         $or: [
                             { country: scholarship.country },
                             { subject: { $in: scholarship.subject || [] } },
@@ -560,7 +576,6 @@ Your helpful answer here...
                     })
                     .limit(4)
                     .toArray();
-
                 // 5. Check User specific statuses if logged in
                 let saved = false;
                 let applied = false;
@@ -1250,11 +1265,11 @@ Your helpful answer here...
                     //     }
                     // ]).toArray()
                     scholarshipsCollection.aggregate([
-                        {
-                            $match: {
-                                isActive: true
-                            }
-                        },
+                        // {
+                        //     $match: {
+                        //         isActive: true
+                        //     }
+                        // },
                         {
                             $addFields: {
                                 deadlineDate: {
