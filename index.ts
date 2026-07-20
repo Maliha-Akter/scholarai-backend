@@ -681,6 +681,109 @@ async function run() {
             }
         });
 
+        // GET: Check if a specific scholarship has already been applied to by the current user
+        app.get('/applications/status/:scholarshipId',
+            verifyToken,
+            async (req: AuthenticatedRequest, res: Response): Promise<any> => {
+                try {
+                    const { scholarshipId } = req.params;
+                    const userId = req.user?.id;
+
+                    // 1. Normalize parameter to a clean, flat string
+                    const targetId: string = Array.isArray(scholarshipId) ? scholarshipId[0] : scholarshipId;
+
+                    if (!targetId || !userId) {
+                        return res.status(400).json({ hasApplied: false, message: "Missing required identifiers." });
+                    }
+
+                    // 2. Validate identifier format
+                    if (!ObjectId.isValid(targetId)) {
+                        return res.status(400).json({ hasApplied: false, message: "Invalid scholarshipId format." });
+                    }
+
+                    // 3. Standardize userId format
+                    const safeUserId = ObjectId.isValid(userId) ? new ObjectId(userId) : userId;
+
+                    // 4. Look up matching application record
+                    const existingApp = await applicationsCollection.findOne({
+                        userId: safeUserId,
+                        scholarshipId: new ObjectId(targetId)
+                    });
+
+                    // 5. Return boolean state directly
+                    return res.status(200).json({ hasApplied: !!existingApp });
+
+                } catch (error) {
+                    console.error("Error checking application status:", error);
+                    return res.status(500).json({ hasApplied: false, message: "Internal Server Error" });
+                }
+            }
+        );
+
+        // ==========================================
+        // 4. UNIVERSITIES API
+        // ==========================================
+
+        // READ: Get All Universities (Grouped from scholarships)
+        app.get('/universities', async (req: Request, res: Response) => {
+            try {
+                const universities = await scholarshipsCollection.aggregate([
+                    {
+                        $group: {
+                            _id: "$universityName",
+                            universityName: { $first: "$universityName" },
+                            country: { $first: "$country" },
+                            city: { $first: "$city" }, // Assumes you have a city field, otherwise it returns null
+                            totalScholarships: { $sum: 1 }
+                        }
+                    },
+                    {
+                        $sort: {
+                            universityName: 1 // Sort alphabetically
+                        }
+                    }
+                ]).toArray();
+
+                res.status(200).json(universities);
+            } catch (error) {
+                console.error("Error fetching universities:", error);
+                res.status(500).json({ message: "Internal Server Error" });
+            }
+        });
+
+        // READ: Get all scholarships for a specific university
+        app.get('/universities/:universityName', async (req: Request, res: Response) => {
+            try {
+                const { universityName } = req.params;
+
+                // Find all scholarships matching this university
+                const scholarships = await scholarshipsCollection
+                    .find({ universityName: universityName, isActive: true })
+                    .sort({ createdAt: -1 })
+                    .toArray();
+
+                if (scholarships.length === 0) {
+                    return res.status(404).json({ message: "No scholarships found for this university" });
+                }
+
+                // Package up the university metadata based on the first scholarship found
+                const universityInfo = {
+                    universityName: scholarships[0].universityName,
+                    country: scholarships[0].country,
+                    city: scholarships[0].city,
+                    totalScholarships: scholarships.length
+                };
+
+                res.status(200).json({
+                    universityInfo,
+                    scholarships
+                });
+            } catch (error) {
+                console.error("Error fetching university scholarships:", error);
+                res.status(500).json({ message: "Internal Server Error" });
+            }
+        });
+
 
 
         app.get('/', (req: Request, res: Response) => {
