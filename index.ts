@@ -143,6 +143,7 @@ async function run() {
 
                 const completion = await groq.chat.completions.create({
                     model: "llama-3.3-70b-versatile",
+                    // model: "deepseek-r1-distill-llama-70b",
                     messages: [
                         {
                             role: "system",
@@ -328,7 +329,7 @@ async function run() {
             }
         );
 
-        app.get('/scholarships', verifyToken, async (req: Request, res: Response) => {
+        app.get('/scholarships', async (req: Request, res: Response) => {
             try {
                 const {
                     page = 1,
@@ -721,7 +722,7 @@ async function run() {
         );
 
         // ==========================================
-        // 4. UNIVERSITIES API
+        // UNIVERSITIES API
         // ==========================================
 
         // READ: Get All Universities (Grouped from scholarships)
@@ -785,7 +786,7 @@ async function run() {
         });
 
         // ==========================================
-        // 2. REVIEWS API
+        // REVIEWS API
         // ==========================================
 
         // CREATE: Add a review and update scholarship rating
@@ -1064,7 +1065,10 @@ async function run() {
                 const userObjectId = new ObjectId(userId);
                 const now = new Date();
 
-                // Run all queries concurrently
+                // Expanded to 180 days (approx. 6 months) to ensure we aren't filtering out dates that are a few months away
+                const futureWindowLimit = new Date();
+                futureWindowLimit.setDate(now.getDate() + 180);
+
                 const [
                     myScholarshipsCount,
                     savedCount,
@@ -1078,21 +1082,22 @@ async function run() {
                     upcomingDeadlines
                 ] = await Promise.all([
                     // 1. Stats Counts
-                    scholarshipsCollection.countDocuments({ authorId: userObjectId }),
+                    scholarshipsCollection.countDocuments({ authorId: userId }),
+
                     savedCollection.countDocuments({ userId: userObjectId }),
                     applicationsCollection.countDocuments({ userId: userObjectId }),
                     reviewsCollection.countDocuments({ userId: userObjectId }),
 
                     // 2. Performance Metrics
                     scholarshipsCollection.aggregate([
-                        { $match: { authorId: userObjectId } },
+                        { $match: { authorId: userId } },
                         {
                             $group: {
                                 _id: null,
-                                totalViews: { $sum: "$views" },
+                                totalViews: { $sum: "$totalViews" },
                                 averageRating: { $avg: "$rating" },
-                                totalReviews: { $sum: "$reviewsCount" },
-                                popularityScore: { $avg: "$popularityScore" }
+                                totalReviews: { $sum: "$totalReviews" },
+                                popularityScore: { $avg: "$popularity" }
                             }
                         }
                     ]).toArray(),
@@ -1115,7 +1120,7 @@ async function run() {
                             $project: {
                                 title: "$scholarship.title",
                                 university: "$scholarship.universityName",
-                                status: 1, // Assumes status lives on the application document
+                                status: 1,
                                 appliedAt: 1
                             }
                         }
@@ -1123,8 +1128,8 @@ async function run() {
 
                     // 4. My Scholarships (Authored)
                     scholarshipsCollection.find(
-                        { authorId: userObjectId },
-                        { projection: { title: 1, universityName: 1, country: 1, rating: 1, views: 1, reviewsCount: 1, slug: 1 } }
+                        { authorId: userId },
+                        { projection: { title: 1, universityName: 1, country: 1, rating: 1, totalViews: 1, totalReviews: 1, slug: 1 } }
                     )
                         .sort({ updatedAt: -1 })
                         .limit(5)
@@ -1178,46 +1183,103 @@ async function run() {
                         }
                     ]).toArray(),
 
-                    // 7. Upcoming Deadlines (via Applications)
-                    // 7. Upcoming Deadlines (via Applications)
-                    applicationsCollection.aggregate([
-                        { $match: { userId: userObjectId } },
+                    // 7. Upcoming Deadlines (Global View)
+                    // scholarshipsCollection.aggregate([
+                    //     {
+                    //         $match: {
+                    //             isActive: true
+                    //         }
+                    //     },
+                    //     {
+                    //         $addFields: {
+                    //             deadlineDate: {
+                    //                 $dateFromString: {
+                    //                     dateString: "$funding.applicationDeadline", // Corrected path
+                    //                     format: "%Y-%m-%d",
+                    //                     onError: null,
+                    //                     onNull: null
+                    //                 }
+                    //             }
+                    //         }
+                    //     },
+                    //     {
+                    //         $match: {
+                    //             deadlineDate: {
+                    //                 $gte: now,
+                    //                 $lte: futureWindowLimit
+                    //             }
+                    //         }
+                    //     },
+                    //     { $sort: { deadlineDate: 1 } },
+                    //     { $limit: 5 },
+                    //     {
+                    //         $project: {
+                    //             title: 1,
+                    //             deadline: "$funding.applicationDeadline", // Corrected path
+                    //             universityName: 1
+                    //         }
+                    //     }
+                    // ]).toArray()
+                    scholarshipsCollection.aggregate([
                         {
-                            $lookup: {
-                                from: "scholarships",
-                                localField: "scholarshipId",
-                                foreignField: "_id",
-                                as: "scholarship"
+                            $match: {
+                                isActive: true
                             }
                         },
-                        { $unwind: "$scholarship" },
-                        // Convert string to BSON Date for accurate comparison
                         {
                             $addFields: {
                                 deadlineDate: {
-                                    $dateFromString: { dateString: "$scholarship.applicationDeadline" }
+                                    $dateFromString: {
+                                        dateString: "$applicationDeadline",
+                                        format: "%Y-%m-%d",
+                                        onError: null,
+                                        onNull: null
+                                    }
                                 }
                             }
                         },
-                        // Now compare the converted date field
-                        { $match: { deadlineDate: { $gte: now } } },
-                        { $sort: { deadlineDate: 1 } },
-                        { $limit: 5 },
+                        {
+                            $match: {
+                                deadlineDate: {
+                                    $gte: now,
+                                    $lte: futureWindowLimit
+                                }
+                            }
+                        },
+                        {
+                            $sort: {
+                                deadlineDate: 1
+                            }
+                        },
+                        {
+                            $limit: 5
+                        },
                         {
                             $project: {
-                                title: "$scholarship.title",
-                                deadline: "$scholarship.applicationDeadline"
+                                title: 1,
+                                universityName: 1,
+                                deadline: "$applicationDeadline"
                             }
                         }
                     ]).toArray()
                 ]);
 
-                // Safely extract performance defaults if user has no scholarships yet
                 const performance = performanceAgg[0] || {
                     totalViews: 0, averageRating: 0, totalReviews: 0, popularityScore: 0
                 };
+                const samples = await scholarshipsCollection.find(
+                    {},
+                    {
+                        projection: {
+                            title: 1,
+                            funding: 1,
+                            applicationDeadline: 1,
+                            isActive: 1
+                        }
+                    }
+                ).limit(5).toArray();
 
-                // Assemble the single payload
+                console.log(JSON.stringify(samples, null, 2));
                 res.status(200).json({
                     stats: {
                         myScholarships: myScholarshipsCount,
@@ -1232,7 +1294,11 @@ async function run() {
                         popularityScore: performance.popularityScore ? Math.round(performance.popularityScore) : 0
                     },
                     recentApplications,
-                    myScholarships,
+                    myScholarships: myScholarships.map(s => ({
+                        ...s,
+                        views: s.totalViews,
+                        reviewsCount: s.totalReviews
+                    })),
                     savedScholarships,
                     recentReviews,
                     upcomingDeadlines
@@ -1243,8 +1309,6 @@ async function run() {
                 res.status(500).json({ message: "Failed to load dashboard data" });
             }
         });
-
-
 
         app.get('/', (req: Request, res: Response) => {
             res.send('ScholarAI API is active.');
