@@ -595,6 +595,92 @@ async function run() {
             }
         });
 
+        //Application for Scholarship
+        app.post('/applications',
+            verifyToken,
+            async (req: AuthenticatedRequest, res: Response): Promise<any> => {
+                try {
+                    const { scholarshipId } = req.body;
+                    const userId = req.user?.id;
+
+                    // Validate presence of critical data points
+                    if (!scholarshipId || !userId) {
+                        return res.status(400).json({ message: "Missing required fields" });
+                    }
+
+                    // Securely validate identifier formats
+                    if (!ObjectId.isValid(scholarshipId)) {
+                        return res.status(400).json({
+                            message: "Invalid scholarshipId format. Make sure you are sending the _id, not the slug."
+                        });
+                    }
+
+                    // Standardize userId parameters
+                    const safeUserId = ObjectId.isValid(userId) ? new ObjectId(userId) : userId;
+
+                    const searchCriteria = {
+                        userId: safeUserId,
+                        scholarshipId: new ObjectId(scholarshipId)
+                    };
+
+                    // Prevent duplicate applications tracking
+                    const existingApp = await applicationsCollection.findOne(searchCriteria);
+                    if (existingApp) {
+                        return res.status(409).json({ message: "Already applied", applied: true });
+                    }
+
+                    const newApplication = {
+                        ...searchCriteria,
+                        status: "Applied",
+                        appliedAt: new Date(),
+                        updatedAt: new Date()
+                    };
+
+                    await applicationsCollection.insertOne(newApplication);
+                    return res.status(201).json({ message: "Application tracked successfully", applied: true });
+
+                } catch (error) {
+                    console.error("Error tracking application:", error);
+                    return res.status(500).json({ message: "Internal Server Error" });
+                }
+            }
+        );
+        app.get('/applications', verifyToken, async (req: AuthenticatedRequest, res: Response) => {
+            try {
+                const userId = req.user?.id;
+                if (!userId) return res.status(401).json({ message: "Unauthorized" });
+
+                const history = await applicationsCollection.aggregate([
+                    { $match: { userId: new ObjectId(userId) } },
+                    { $sort: { appliedAt: -1 } },
+                    {
+                        $lookup: {
+                            from: "scholarships",
+                            localField: "scholarshipId",
+                            foreignField: "_id",
+                            as: "scholarship"
+                        }
+                    },
+                    { $unwind: "$scholarship" },
+                    {
+                        $project: {
+                            _id: 1,
+                            status: 1,
+                            appliedAt: 1,
+                            "scholarship.title": 1,
+                            "scholarship.universityName": 1,
+                            "scholarship.country": 1
+                        }
+                    }
+                ]).toArray();
+
+                res.status(200).json(history);
+            } catch (error) {
+                console.error("Error fetching applications:", error);
+                res.status(500).json({ message: "Internal Server Error" });
+            }
+        });
+
 
 
         app.get('/', (req: Request, res: Response) => {
