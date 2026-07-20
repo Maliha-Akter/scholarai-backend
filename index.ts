@@ -228,27 +228,27 @@ Your helpful answer here...
                 res.status(500).json({ message: "Internal Server Error" });
             }
         });
-       app.post('/api/ai/recommend', async (req: Request, res: Response) => {
-    try {
-        // 1. Destructure interactionHistory alongside standard filters
-        const { country, degree, subject, fundingType, interactionHistory } = req.body;
+        app.post('/api/ai/recommend', async (req: Request, res: Response) => {
+            try {
+                // 1. Destructure interactionHistory alongside standard filters
+                const { country, degree, subject, fundingType, interactionHistory } = req.body;
 
-        // 2. Build Query targeting exact MongoDB structure
-        const query: any = { isActive: true };
+                // 2. Build Query targeting exact MongoDB structure
+                const query: any = { isActive: true };
 
-        if (country) query.country = { $regex: country, $options: "i" };
-        if (degree) query.degree = { $regex: degree, $options: "i" };
-        if (fundingType) query.fundingType = { $regex: fundingType, $options: "i" };
+                if (country) query.country = { $regex: country, $options: "i" };
+                if (degree) query.degree = { $regex: degree, $options: "i" };
+                if (fundingType) query.fundingType = { $regex: fundingType, $options: "i" };
 
-        if (subject) {
-            query.subject = { $in: [new RegExp(subject, "i")] };
-        }
+                if (subject) {
+                    query.subject = { $in: [new RegExp(subject, "i")] };
+                }
 
-        // 3. Query MongoDB with a clean layout limit
-        const scholarships = await scholarshipsCollection.find(query).limit(5).toArray();
+                // 3. Query MongoDB with a clean layout limit
+                const scholarships = await scholarshipsCollection.find(query).limit(5).toArray();
 
-        // 4. Format database results
-        const scholarshipList = scholarships.map((s: any) => `
+                // 4. Format database results
+                const scholarshipList = scholarships.map((s: any) => `
 Title: ${s.title}
 University: ${s.universityName}
 Country: ${s.country}
@@ -259,19 +259,19 @@ Deadline: ${s.applicationDeadline || "N/A"}
 Application URL: ${s.applicationUrl || "N/A"}
 `).join("\n---");
 
-        // 5. NEW: Format the user's past interaction history for the AI prompt
-        let historyContext = "No prior search history available for this user.";
-        if (Array.isArray(interactionHistory) && interactionHistory.length > 0) {
-            historyContext = interactionHistory
-                .slice(0, 5) // Keep prompt concise by looking at up to 5 recent searches
-                .map((h: any, idx: number) => {
-                    const filters = [h.country, h.degree, h.subject, h.fundingType].filter(Boolean).join(", ");
-                    return `Search #${idx + 1}: [${filters || "General Browse"}]`;
-                }).join("\n");
-        }
+                // 5. NEW: Format the user's past interaction history for the AI prompt
+                let historyContext = "No prior search history available for this user.";
+                if (Array.isArray(interactionHistory) && interactionHistory.length > 0) {
+                    historyContext = interactionHistory
+                        .slice(0, 5) // Keep prompt concise by looking at up to 5 recent searches
+                        .map((h: any, idx: number) => {
+                            const filters = [h.country, h.degree, h.subject, h.fundingType].filter(Boolean).join(", ");
+                            return `Search #${idx + 1}: [${filters || "General Browse"}]`;
+                        }).join("\n");
+                }
 
-        // 6. Updated algorithmic grading directive with behavioral context
-        const userPromptContext = `
+                // 6. Updated algorithmic grading directive with behavioral context
+                const userPromptContext = `
 The user is currently searching for a scholarship with these immediate criteria:
 - Target Country: ${country || "Any"}
 - Degree level: ${degree || "Any"}
@@ -299,27 +299,27 @@ YOUR INSTRUCTIONS:
 Deliver the advice directly. Do not reference structural terms like "based on the list provided above" or "our database" to the end user.
 `;
 
-        const completion = await groq.chat.completions.create({
-            model: "llama-3.3-70b-versatile",
-            messages: [
-                {
-                    role: "system",
-                    content: "You are ScholarAI, an expert scholarship advisor. Help users review options cleanly using simple markdown formats."
-                },
-                {
-                    role: "user",
-                    content: userPromptContext
-                }
-            ],
+                const completion = await groq.chat.completions.create({
+                    model: "llama-3.3-70b-versatile",
+                    messages: [
+                        {
+                            role: "system",
+                            content: "You are ScholarAI, an expert scholarship advisor. Help users review options cleanly using simple markdown formats."
+                        },
+                        {
+                            role: "user",
+                            content: userPromptContext
+                        }
+                    ],
+                });
+
+                res.json({ recommendations: completion.choices[0].message.content });
+
+            } catch (error) {
+                console.error("AI Recommendation Engine Error:", error);
+                res.status(500).json({ message: "Failed to generate system recommendations" });
+            }
         });
-
-        res.json({ recommendations: completion.choices[0].message.content });
-
-    } catch (error) {
-        console.error("AI Recommendation Engine Error:", error);
-        res.status(500).json({ message: "Failed to generate system recommendations" });
-    }
-});
 
         //3. post and get scholarship
         app.post('/scholarships',
