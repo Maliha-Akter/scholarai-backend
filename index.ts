@@ -463,6 +463,138 @@ async function run() {
             }
         });
 
+        // Get scholarship Details by ID
+        app.get('/scholarships/:identifier', optionalVerifyToken, async (req: AuthenticatedRequest, res: Response) => {
+            try {
+                const { identifier } = req.params as { identifier: string };
+
+                if (!identifier) {
+                    return res.status(400).json({ message: "Identifier is required" });
+                }
+
+                // 1. Determine if the identifier is an ID or a Slug
+                const query = ObjectId.isValid(identifier)
+                    ? { _id: new ObjectId(identifier) }
+                    : { slug: identifier };
+
+                // 2. Fetch Main Scholarship Data
+                const scholarship = await scholarshipsCollection.findOne(query);
+
+                if (!scholarship) {
+                    return res.status(404).json({ message: "Scholarship not found" });
+                }
+
+                const scholarshipId = scholarship._id;
+
+                // Increment total views asynchronously 
+                scholarshipsCollection.updateOne(
+                    { _id: scholarshipId },
+                    { $inc: { totalViews: 1 } }
+                ).catch(err => console.error("Failed to update views", err));
+
+                // 3. Fetch Reviews
+                const reviews = await reviewsCollection.aggregate([
+                    { $match: { scholarshipId: scholarshipId } },
+                    { $sort: { createdAt: -1 } },
+                    {
+                        $lookup: {
+                            from: "user",
+                            localField: "userId",
+                            foreignField: "_id",
+                            as: "author"
+                        }
+                    },
+                    { $unwind: "$author" },
+                    {
+                        $project: {
+                            rating: 1, review: 1, createdAt: 1,
+                            "author.name": 1, "author.image": 1
+                        }
+                    }
+                ]).toArray();
+
+                // 4. Fetch Related Scholarships
+                const related = await scholarshipsCollection
+                    .find({
+                        _id: { $ne: scholarshipId },
+                        isActive: true,
+                        $or: [
+                            { country: scholarship.country },
+                            { subject: { $in: scholarship.subject || [] } },
+                            { degree: scholarship.degree }
+                        ]
+                    })
+                    .project({
+                        image: 1, title: 1, slug: 1, universityName: 1, country: 1,
+                        degree: 1, fundingType: 1, applicationDeadline: 1, rating: 1
+                    })
+                    .limit(4)
+                    .toArray();
+
+                // 5. Check User specific statuses if logged in
+                let saved = false;
+                let applied = false;
+
+                // Because of optionalVerifyToken, req.user will only exist if they are logged in
+                if (req.user?.id) {
+                    const userId = new ObjectId(req.user.id);
+
+                    const savedItem = await savedCollection.findOne({ userId, scholarshipId });
+                    if (savedItem) saved = true;
+
+                    const appliedItem = await applicationsCollection.findOne({ userId, scholarshipId });
+                    if (appliedItem) applied = true;
+                }
+
+                // 6. Return combined payload
+                res.status(200).json({
+                    scholarship,
+                    reviews,
+                    related,
+                    saved,
+                    applied
+                });
+
+            } catch (error) {
+                console.error("Error fetching scholarship details:", error);
+                res.status(500).json({ message: "Internal Server Error" });
+            }
+        });
+
+        // Scholarship Edit and Update and Delete routes can be added here with proper authentication and authorization checks
+        app.put('/scholarships/:id', verifyToken, async (req: AuthenticatedRequest, res: Response) => {
+            try {
+                const { id } = req.params;
+                const updateData = req.body;
+                delete updateData._id; // Prevent updating the immutable _id field
+
+                updateData.updatedAt = new Date();
+
+                const result = await scholarshipsCollection.updateOne(
+                    { _id: new ObjectId(id) },
+                    { $set: updateData }
+                );
+
+                if (result.matchedCount === 0) return res.status(404).json({ message: "Not found" });
+                res.status(200).json({ message: "Updated successfully", result });
+            } catch (error) {
+                res.status(500).json({ message: "Internal Server Error" });
+            }
+        });
+
+        // NEW: DELETE a scholarship
+        app.delete('/scholarships/:id', verifyToken, async (req: AuthenticatedRequest, res: Response) => {
+            try {
+                const { id } = req.params;
+                const result = await scholarshipsCollection.deleteOne({ _id: new ObjectId(id) });
+
+                if (result.deletedCount === 0) return res.status(404).json({ message: "Not found" });
+                res.status(200).json({ message: "Deleted successfully" });
+            } catch (error) {
+                res.status(500).json({ message: "Internal Server Error" });
+            }
+        });
+
 
 
         app.get('/', (req: Request, res: Response) => {
