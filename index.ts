@@ -134,38 +134,67 @@ async function run() {
         // ==========================================
 
         app.post('/ai/chat', async (req: Request, res: Response) => {
-            try {
-                const { messages } = req.body;
+    try {
+        const { messages } = req.body;
 
-                if (!messages || !Array.isArray(messages)) {
-                    return res.status(400).json({ message: "Invalid request: 'messages' array required" });
-                }
+        if (!messages || !Array.isArray(messages)) {
+            return res.status(400).json({ message: "Invalid request: 'messages' array required" });
+        }
 
-                const completion = await groq.chat.completions.create({
-                    model: "llama-3.3-70b-versatile",
-                    // model: "deepseek-r1-distill-llama-70b",
-                    messages: [
-                        {
-                            role: "system",
-                            content: "You are ScholarAI Assistant. Help users with scholarships, universities, admissions, funding, SOPs, IELTS and study abroad. Keep responses concise.",
-                        },
-                        ...messages.map((msg: any) => ({
-                            role: msg.role,
-                            content: msg.content
-                        }))
-                    ],
-                });
+        // Set up headers for Server-Sent Events (Streaming)
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
 
-                res.json({
-                    reply: completion.choices[0].message.content,
-                });
-            } catch (error) {
-                console.error("AI Chat Error:", error);
-                res.status(500).json({
-                    message: "AI Error: Failed to generate response",
-                });
-            }
+        const systemPrompt = ` You are ScholarAI Assistant inside the ScholarAI Scholarship Portal.
+You help users navigate and explore the following application features:
+- Search Scholarships
+- Scholarship Details
+- Save Scholarships
+- My Applications
+- AI Scholarship Advisor
+- AI Chat Assistant
+- Dashboard
+- User Profile
+
+If users ask where to perform an action or find something, gently guide them to the correct page listed above.
+If users ask about scholarships, admissions, requirements, funding, SOPs, or IELTS, answer normally.
+Keep responses concise and well-formatted.
+
+CRITICAL: At the very end of your response, always append a separator line "|||" followed by a valid JSON array containing exactly 3 follow-up question strings that the user might want to click next based on your response. 
+Example structure at the end of your response:
+Your helpful answer here...
+||| ["Tell me about DAAD", "What are the funding types?", "How do I apply?"]`;
+
+        const completion = await groq.chat.completions.create({
+            model: "llama-3.3-70b-versatile",
+            messages: [
+                {
+                    role: "system",
+                    content: systemPrompt,
+                },
+                ...messages.map((msg: any) => ({
+                    role: msg.role,
+                    content: msg.content
+                }))
+            ],
+            stream: true, // Turn streaming ON
         });
+
+        // Write chunks to the response stream as they arrive
+        for await (const chunk of completion) {
+            const text = chunk.choices[0]?.delta?.content || "";
+            res.write(text);
+        }
+        
+        res.end();
+    } catch (error) {
+        console.error("AI Chat Error:", error);
+        res.status(500).json({
+            message: "AI Error: Failed to generate response",
+        });
+    }
+});
         // 2. api recommendations engine
         app.get('/api/filters', async (req: Request, res: Response) => {
             try {
