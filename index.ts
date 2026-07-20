@@ -381,6 +381,28 @@ async function run() {
             }
         });
 
+        // For home page random scholarship recommendations 
+        app.get('/api/scholarships/random', async (req: Request, res: Response) => {
+            try {
+                const randomScholarships = await scholarshipsCollection
+                    .aggregate([
+                        { $match: { isActive: true } }, // Only fetch active scholarships
+                        { $sample: { size: 3 } }        // Randomly pick 3
+                    ])
+                    .toArray();
+
+                return res.status(200).json({
+                    success: true,
+                    data: randomScholarships
+                });
+            } catch (error) {
+                console.error("Error fetching top scholarships:", error);
+                return res.status(500).json({
+                    success: false,
+                    message: "Failed to fetch top scholarships."
+                });
+            }
+        });
 
 
         app.get('/', (req: Request, res: Response) => {
