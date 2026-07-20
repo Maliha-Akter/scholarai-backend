@@ -277,8 +277,115 @@ async function run() {
             }
         });
 
+        //3. post and get scholarship
+        app.post('/scholarships',
+            verifyToken,
+            async (req: AuthenticatedRequest, res: Response) => {
+                try {
+                    // 1. Ensure the user is authenticated (verifyToken should handle this, but just in case)
+                    if (!req.user) {
+                        return res.status(401).json({ message: "Unauthorized: No user found in session" });
+                    }
+
+                    // 2. Fetch the current user from your users table/collection
+                    // Adjust the query based on what verifyToken attaches to req.user (e.g., email or id)
+                    const query = req.user.email
+                        ? { email: req.user.email }
+                        : { _id: new ObjectId(req.user.id) };
+
+                    const currentUser = await usersCollection.findOne(query);
+
+                    if (!currentUser) {
+                        return res.status(404).json({ message: "User not found in database" });
+                    }
+
+                    const scholarshipData = req.body;
+
+                    // 3. Set default fields and attach the user ID
+                    const newScholarship = {
+                        ...scholarshipData,
+
+                        // --- Add the User relations here ---
+                        authorId: currentUser._id,           // The MongoDB ID of the user
+                        authorName: currentUser.name || '',  // Optional: Save name for easier frontend display
+                        authorEmail: currentUser.email,      // Optional
+                        // -----------------------------------
+
+                        rating: scholarshipData.rating || 0,
+                        totalReviews: scholarshipData.totalReviews || 0,
+                        popularity: scholarshipData.popularity || 0,
+                        totalViews: scholarshipData.totalViews || 0,
+                        createdAt: new Date(),
+                        updatedAt: new Date(),
+                    };
+
+                    const result = await scholarshipsCollection.insertOne(newScholarship);
+                    res.status(201).json(result);
+                } catch (error) {
+                    console.error("Error creating scholarship:", error);
+                    res.status(500).json({ message: "Internal Server Error" });
+                }
+            }
+        );
+
+        app.get('/scholarships', verifyToken, async (req: Request, res: Response) => {
+            try {
+                const {
+                    page = 1,
+                    limit = 6, // 🐛 Updated limit to 6
+                    country, degree, fundingType, subject, search, sort = 'createdAt',
+                    userId // This is receiving the email from your frontend
+                } = req.query;
+
+                const query: any = { isActive: true };
+
+                if (userId) {
+                    query.authorEmail = userId;
+                }
+
+                if (country) query.country = country;
+                if (degree) query.degree = degree;
+                if (fundingType) query.fundingType = fundingType;
+                if (subject) query.subject = { $in: [subject] };
+                if (search) {
+                    query.$or = [
+                        { title: { $regex: search, $options: 'i' } },
+                        { universityName: { $regex: search, $options: 'i' } }
+                    ];
+                }
+
+                let sortObj: any = { createdAt: -1 };
+                if (sort === 'applicationDeadline') sortObj = { applicationDeadline: 1 };
+                else if (sort === 'popularity') sortObj = { popularity: -1 };
+                else if (sort === 'title') sortObj = { title: 1 };
+
+                const skip = (Number(page) - 1) * Number(limit);
+                const total = await scholarshipsCollection.countDocuments(query);
+
+                const scholarships = await scholarshipsCollection
+                    .find(query)
+                    .sort(sortObj)
+                    .skip(skip)
+                    .limit(Number(limit))
+                    .toArray();
+
+                res.status(200).json({
+                    total,
+                    page: Number(page),
+                    totalPages: Math.ceil(total / Number(limit)),
+                    scholarships
+                });
+            } catch (error) {
+                console.error("Error fetching scholarships:", error);
+                res.status(500).json({ message: "Internal Server Error" });
+            }
+        });
 
 
+
+        app.get('/', (req: Request, res: Response) => {
+            res.send('ScholarAI API is active.');
+        });
         app.listen(port, () => {
             console.log(`Server running safely on port: ${port}`);
         });
