@@ -1055,6 +1055,194 @@ async function run() {
                 res.status(500).json({ message: "Internal Server Error" });
             }
         });
+        // GET /dashboard - Unified dashboard aggregation
+        app.get('/dashboard', verifyToken, async (req: AuthenticatedRequest, res: Response) => {
+            try {
+                const userId = req.user?.id;
+                if (!userId) return res.status(401).json({ message: "Unauthorized" });
+
+                const userObjectId = new ObjectId(userId);
+                const now = new Date();
+
+                // Run all queries concurrently
+                const [
+                    myScholarshipsCount,
+                    savedCount,
+                    applicationsCount,
+                    reviewsCount,
+                    performanceAgg,
+                    recentApplications,
+                    myScholarships,
+                    savedScholarships,
+                    recentReviews,
+                    upcomingDeadlines
+                ] = await Promise.all([
+                    // 1. Stats Counts
+                    scholarshipsCollection.countDocuments({ authorId: userObjectId }),
+                    savedCollection.countDocuments({ userId: userObjectId }),
+                    applicationsCollection.countDocuments({ userId: userObjectId }),
+                    reviewsCollection.countDocuments({ userId: userObjectId }),
+
+                    // 2. Performance Metrics
+                    scholarshipsCollection.aggregate([
+                        { $match: { authorId: userObjectId } },
+                        {
+                            $group: {
+                                _id: null,
+                                totalViews: { $sum: "$views" },
+                                averageRating: { $avg: "$rating" },
+                                totalReviews: { $sum: "$reviewsCount" },
+                                popularityScore: { $avg: "$popularityScore" }
+                            }
+                        }
+                    ]).toArray(),
+
+                    // 3. Recent Applications
+                    applicationsCollection.aggregate([
+                        { $match: { userId: userObjectId } },
+                        { $sort: { appliedAt: -1 } },
+                        { $limit: 5 },
+                        {
+                            $lookup: {
+                                from: "scholarships",
+                                localField: "scholarshipId",
+                                foreignField: "_id",
+                                as: "scholarship"
+                            }
+                        },
+                        { $unwind: "$scholarship" },
+                        {
+                            $project: {
+                                title: "$scholarship.title",
+                                university: "$scholarship.universityName",
+                                status: 1, // Assumes status lives on the application document
+                                appliedAt: 1
+                            }
+                        }
+                    ]).toArray(),
+
+                    // 4. My Scholarships (Authored)
+                    scholarshipsCollection.find(
+                        { authorId: userObjectId },
+                        { projection: { title: 1, universityName: 1, country: 1, rating: 1, views: 1, reviewsCount: 1, slug: 1 } }
+                    )
+                        .sort({ updatedAt: -1 })
+                        .limit(5)
+                        .toArray(),
+
+                    // 5. Saved Scholarships
+                    savedCollection.aggregate([
+                        { $match: { userId: userObjectId } },
+                        { $sort: { createdAt: -1 } },
+                        { $limit: 4 },
+                        {
+                            $lookup: {
+                                from: "scholarships",
+                                localField: "scholarshipId",
+                                foreignField: "_id",
+                                as: "scholarship"
+                            }
+                        },
+                        { $unwind: "$scholarship" },
+                        {
+                            $project: {
+                                title: "$scholarship.title",
+                                university: "$scholarship.universityName",
+                                country: "$scholarship.country",
+                                fundingType: "$scholarship.fundingType"
+                            }
+                        }
+                    ]).toArray(),
+
+                    // 6. Recent Reviews
+                    reviewsCollection.aggregate([
+                        { $match: { userId: userObjectId } },
+                        { $sort: { createdAt: -1 } },
+                        { $limit: 5 },
+                        {
+                            $lookup: {
+                                from: "scholarships",
+                                localField: "scholarshipId",
+                                foreignField: "_id",
+                                as: "scholarship"
+                            }
+                        },
+                        { $unwind: "$scholarship" },
+                        {
+                            $project: {
+                                title: "$scholarship.title",
+                                rating: 1,
+                                reviewText: 1,
+                                createdAt: 1
+                            }
+                        }
+                    ]).toArray(),
+
+                    // 7. Upcoming Deadlines (via Applications)
+                    // 7. Upcoming Deadlines (via Applications)
+                    applicationsCollection.aggregate([
+                        { $match: { userId: userObjectId } },
+                        {
+                            $lookup: {
+                                from: "scholarships",
+                                localField: "scholarshipId",
+                                foreignField: "_id",
+                                as: "scholarship"
+                            }
+                        },
+                        { $unwind: "$scholarship" },
+                        // Convert string to BSON Date for accurate comparison
+                        {
+                            $addFields: {
+                                deadlineDate: {
+                                    $dateFromString: { dateString: "$scholarship.applicationDeadline" }
+                                }
+                            }
+                        },
+                        // Now compare the converted date field
+                        { $match: { deadlineDate: { $gte: now } } },
+                        { $sort: { deadlineDate: 1 } },
+                        { $limit: 5 },
+                        {
+                            $project: {
+                                title: "$scholarship.title",
+                                deadline: "$scholarship.applicationDeadline"
+                            }
+                        }
+                    ]).toArray()
+                ]);
+
+                // Safely extract performance defaults if user has no scholarships yet
+                const performance = performanceAgg[0] || {
+                    totalViews: 0, averageRating: 0, totalReviews: 0, popularityScore: 0
+                };
+
+                // Assemble the single payload
+                res.status(200).json({
+                    stats: {
+                        myScholarships: myScholarshipsCount,
+                        saved: savedCount,
+                        applications: applicationsCount,
+                        reviews: reviewsCount
+                    },
+                    performance: {
+                        totalViews: performance.totalViews,
+                        averageRating: performance.averageRating ? parseFloat(performance.averageRating.toFixed(1)) : 0,
+                        totalReviews: performance.totalReviews,
+                        popularityScore: performance.popularityScore ? Math.round(performance.popularityScore) : 0
+                    },
+                    recentApplications,
+                    myScholarships,
+                    savedScholarships,
+                    recentReviews,
+                    upcomingDeadlines
+                });
+
+            } catch (error) {
+                console.error("Dashboard Aggregation Error:", error);
+                res.status(500).json({ message: "Failed to load dashboard data" });
+            }
+        });
 
 
 
