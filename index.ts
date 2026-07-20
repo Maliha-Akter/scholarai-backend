@@ -228,84 +228,98 @@ Your helpful answer here...
                 res.status(500).json({ message: "Internal Server Error" });
             }
         });
-        app.post('/api/ai/recommend', async (req: Request, res: Response) => {
-            try {
-                const { country, degree, subject, fundingType } = req.body;
+       app.post('/api/ai/recommend', async (req: Request, res: Response) => {
+    try {
+        // 1. Destructure interactionHistory alongside standard filters
+        const { country, degree, subject, fundingType, interactionHistory } = req.body;
 
-                // 1. Build Query targeting exact MongoDB structure
-                const query: any = { isActive: true };
+        // 2. Build Query targeting exact MongoDB structure
+        const query: any = { isActive: true };
 
-                if (country) query.country = { $regex: country, $options: "i" };
-                if (degree) query.degree = { $regex: degree, $options: "i" };
-                if (fundingType) query.fundingType = { $regex: fundingType, $options: "i" };
+        if (country) query.country = { $regex: country, $options: "i" };
+        if (degree) query.degree = { $regex: degree, $options: "i" };
+        if (fundingType) query.fundingType = { $regex: fundingType, $options: "i" };
 
-                // CRITERIA 4: Using explicit array parsing logic for fields saved as collections
-                if (subject) {
-                    query.subject = { $in: [new RegExp(subject, "i")] };
+        if (subject) {
+            query.subject = { $in: [new RegExp(subject, "i")] };
+        }
+
+        // 3. Query MongoDB with a clean layout limit
+        const scholarships = await scholarshipsCollection.find(query).limit(5).toArray();
+
+        // 4. Format database results
+        const scholarshipList = scholarships.map((s: any) => `
+Title: ${s.title}
+University: ${s.universityName}
+Country: ${s.country}
+Degree Level: ${s.degree}
+Funding Profile: ${s.fundingType}
+Subjects Covered: ${Array.isArray(s.subject) ? s.subject.join(", ") : s.subject}
+Deadline: ${s.applicationDeadline || "N/A"}
+Application URL: ${s.applicationUrl || "N/A"}
+`).join("\n---");
+
+        // 5. NEW: Format the user's past interaction history for the AI prompt
+        let historyContext = "No prior search history available for this user.";
+        if (Array.isArray(interactionHistory) && interactionHistory.length > 0) {
+            historyContext = interactionHistory
+                .slice(0, 5) // Keep prompt concise by looking at up to 5 recent searches
+                .map((h: any, idx: number) => {
+                    const filters = [h.country, h.degree, h.subject, h.fundingType].filter(Boolean).join(", ");
+                    return `Search #${idx + 1}: [${filters || "General Browse"}]`;
+                }).join("\n");
+        }
+
+        // 6. Updated algorithmic grading directive with behavioral context
+        const userPromptContext = `
+The user is currently searching for a scholarship with these immediate criteria:
+- Target Country: ${country || "Any"}
+- Degree level: ${degree || "Any"}
+- Field of Study: ${subject || "Any"}
+- Funding Configuration: ${fundingType || "Any"}
+
+USER BEHAVIORAL PROFILE (Recent search history):
+${historyContext}
+
+Here is a list of real matched records extracted from our system database:
+${scholarshipList || "NO SCHOLARSHIPS FOUND IN SYSTEM DATABASE."}
+
+YOUR INSTRUCTIONS:
+1. If records are available above, choose the best three entries and rank them using this explicit criteria weight:
+   - Priority 1: Country match
+   - Priority 2: Degree level match
+   - Priority 3: Subject field match
+   - Priority 4: Funding type match
+   *Note: If multiple scholarships tie on the explicit priorities above, use the USER BEHAVIORAL PROFILE to break ties by recommending options that align with their past search trends.*
+
+2. For each recommended scholarship, present the Title, University, Application URL, and a clear bulleted "Why?" summary breaking down why it fits their search parameters perfectly.
+
+3. If the provided database record list is completely empty, kindly inform the user that no specific entries match their layout filters. Then, suggest 3 highly actionable, general steps they can take next to adjust their options.
+
+Deliver the advice directly. Do not reference structural terms like "based on the list provided above" or "our database" to the end user.
+`;
+
+        const completion = await groq.chat.completions.create({
+            model: "llama-3.3-70b-versatile",
+            messages: [
+                {
+                    role: "system",
+                    content: "You are ScholarAI, an expert scholarship advisor. Help users review options cleanly using simple markdown formats."
+                },
+                {
+                    role: "user",
+                    content: userPromptContext
                 }
-
-                // 2. Query MongoDB with a clean layout limit
-                const scholarships = await scholarshipsCollection.find(query).limit(5).toArray();
-
-                // CRITERIA 6 & 7: Plaintext string mapping containing vital target Application URLs
-                const scholarshipList = scholarships.map((s: any) => `
-        Title: ${s.title}
-        University: ${s.universityName}
-        Country: ${s.country}
-        Degree Level: ${s.degree}
-        Funding Profile: ${s.fundingType}
-        Subjects Covered: ${Array.isArray(s.subject) ? s.subject.join(", ") : s.subject}
-        Deadline: ${s.applicationDeadline || "N/A"}
-        Application URL: ${s.applicationUrl || "N/A"}
-        `).join("\n---");
-
-                // CRITERIA 8: Rigorous algorithmic grading directive context
-                const userPromptContext = `
-        The user is currently searching for a scholarship with these criteria:
-        - Target Country: ${country || "Any"}
-        - Degree level: ${degree || "Any"}
-        - Field of Study: ${subject || "Any"}
-        - Funding Configuration: ${fundingType || "Any"}
-
-        Here is a list of real matched records extracted from our system database:
-        ${scholarshipList || "NO SCHOLARSHIPS FOUND IN SYSTEM DATABASE."}
-
-        YOUR INSTRUCTIONS:
-        1. If records are available above, choose the best three entries and rank them using this explicit criteria weight:
-           - Priority 1: Country match
-           - Priority 2: Degree level match
-           - Priority 3: Subject field match
-           - Priority 4: Funding type match
-        
-        2. For each recommended scholarship, present the Title, University, Application URL, and a clear bulleted "Why?" summary breaking down why it fits their search parameters perfectly.
-        
-        3. If the provided database record list is completely empty, kindly inform the user that no specific entries match their layout filters. Then, suggest 3 highly actionable, general steps they can take next to adjust their options.
-
-        Deliver the advice directly. Do not reference structural terms like "based on the list provided above" or "our database" to the end user.
-        `;
-
-                // CRITERIA 5: Recommended Chat Completion format pairing System and User messages
-                const completion = await groq.chat.completions.create({
-                    model: "llama-3.3-70b-versatile",
-                    messages: [
-                        {
-                            role: "system",
-                            content: "You are ScholarAI, an expert scholarship advisor. Help users review options cleanly using simple markdown formats."
-                        },
-                        {
-                            role: "user",
-                            content: userPromptContext
-                        }
-                    ],
-                });
-
-                res.json({ recommendations: completion.choices[0].message.content });
-
-            } catch (error) {
-                console.error("AI Recommendation Engine Error:", error);
-                res.status(500).json({ message: "Failed to generate system recommendations" });
-            }
+            ],
         });
+
+        res.json({ recommendations: completion.choices[0].message.content });
+
+    } catch (error) {
+        console.error("AI Recommendation Engine Error:", error);
+        res.status(500).json({ message: "Failed to generate system recommendations" });
+    }
+});
 
         //3. post and get scholarship
         app.post('/scholarships',
