@@ -896,7 +896,165 @@ async function run() {
                 res.status(500).json({ message: "Internal Server Error" });
             }
         });
+        // ==========================================
+        // 3. SAVED SCHOLARSHIPS API
+        // ==========================================
 
+        // CREATE/DELETE: Toggle Save Scholarship
+        app.post('/saved', verifyToken, async (req: AuthenticatedRequest, res: Response) => {
+            try {
+                const { scholarshipId } = req.body;
+                const userId = req.user?.id;
+
+                if (!scholarshipId || !userId) {
+                    return res.status(400).json({ message: "Missing required fields" });
+                }
+
+                // 1. Validate scholarshipId before casting
+                if (!ObjectId.isValid(scholarshipId)) {
+                    return res.status(400).json({ message: "Invalid scholarshipId format. Make sure you are sending the _id, not the slug." });
+                }
+
+                // 2. Safely handle userId (in case it is a UUID from your auth provider)
+                const safeUserId = ObjectId.isValid(userId) ? new ObjectId(userId) : userId;
+
+                const searchCriteria = {
+                    userId: safeUserId,
+                    scholarshipId: new ObjectId(scholarshipId)
+                };
+
+                const existingSave = await savedCollection.findOne(searchCriteria);
+
+                if (existingSave) {
+                    await savedCollection.deleteOne({ _id: existingSave._id });
+                    return res.status(200).json({ message: "Removed from saved items", saved: false });
+                } else {
+                    await savedCollection.insertOne({
+                        ...searchCriteria,
+                        createdAt: new Date()
+                    });
+                    return res.status(201).json({ message: "Added to saved items", saved: true });
+                }
+            } catch (error) {
+                console.error("Error toggling save:", error);
+                res.status(500).json({ message: "Internal Server Error" });
+            }
+        });
+        // GET: Check if a specific scholarship is saved by the current user
+        app.get('/saved/status/:scholarshipId',
+            verifyToken,
+            async (req: AuthenticatedRequest, res: Response): Promise<any> => {
+                try {
+                    const { scholarshipId } = req.params;
+                    const userId = req.user?.id;
+
+                    // 1. Normalize the parameter to guarantee it's a clean, single string
+                    const targetId: string = Array.isArray(scholarshipId) ? scholarshipId[0] : scholarshipId;
+
+                    // 2. Early exit if either identifier is missing
+                    if (!targetId || !userId) {
+                        return res.status(400).json({ isSaved: false, message: "Missing required identifiers." });
+                    }
+
+                    // 3. Securely validate the scholarshipId string structure before casting
+                    if (!ObjectId.isValid(targetId)) {
+                        return res.status(400).json({ isSaved: false, message: "Invalid scholarshipId format." });
+                    }
+
+                    // 4. Safely handle userId depending on your auth format (ObjectId vs plain string)
+                    const safeUserId: ObjectId | string = ObjectId.isValid(userId)
+                        ? new ObjectId(userId)
+                        : userId;
+
+                    // 5. Query the database using the clean flat variables
+                    const existingSave = await savedCollection.findOne({
+                        userId: safeUserId,
+                        scholarshipId: new ObjectId(targetId)
+                    });
+
+                    // 6. Return boolean state directly
+                    return res.status(200).json({ isSaved: !!existingSave });
+
+                } catch (error) {
+                    console.error("Error checking save status:", error);
+                    // Always return a JSON response object even on failures
+                    return res.status(500).json({ isSaved: false, message: "Internal Server Error" });
+                }
+            }
+        );
+        // READ: Get all saved scholarships for logged-in user
+        app.get('/saved', verifyToken, async (req: AuthenticatedRequest, res: Response) => {
+            try {
+                const userId = req.user?.id;
+
+                if (!userId) return res.status(401).json({ message: "Unauthorized" });
+
+                const savedItems = await savedCollection.aggregate([
+                    { $match: { userId: new ObjectId(userId) } },
+                    { $sort: { createdAt: -1 } },
+                    {
+                        $lookup: {
+                            from: "scholarships",
+                            localField: "scholarshipId",
+                            foreignField: "_id",
+                            as: "scholarship"
+                        }
+                    },
+                    { $unwind: "$scholarship" },
+                    {
+                        $project: {
+                            savedAt: "$createdAt",
+                            _id: "$scholarship._id",
+                            image: "$scholarship.image",
+                            title: "$scholarship.title",
+                            slug: "$scholarship.slug",
+                            universityName: "$scholarship.universityName",
+                            country: "$scholarship.country",
+                            degree: "$scholarship.degree",
+                            fundingType: "$scholarship.fundingType",
+                            applicationDeadline: "$scholarship.applicationDeadline",
+                            rating: "$scholarship.rating"
+                        }
+                    }
+                ]).toArray();
+
+                res.status(200).json(savedItems);
+            } catch (error) {
+                console.error("Error fetching saved scholarships:", error);
+                res.status(500).json({ message: "Internal Server Error" });
+            }
+        });
+        app.delete('/saved/:id', verifyToken, async (req: AuthenticatedRequest, res: Response) => {
+            try {
+                const userId = req.user?.id;
+
+                // 1. Ensure scholarshipId is strictly a single string (fixes the TS overload error)
+                const scholarshipId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+
+                if (!userId) return res.status(401).json({ message: "Unauthorized" });
+                if (!scholarshipId) return res.status(400).json({ message: "Missing scholarship ID" });
+
+                // 2. Prevent runtime BSON crashes by validating the ID format first
+                if (!ObjectId.isValid(userId) || !ObjectId.isValid(scholarshipId)) {
+                    return res.status(400).json({ message: "Invalid ID format" });
+                }
+
+                // Match by scholarshipId AND userId so a user can only delete their own saved item
+                const result = await savedCollection.deleteOne({
+                    userId: new ObjectId(userId),
+                    scholarshipId: new ObjectId(scholarshipId)
+                });
+
+                if (result.deletedCount === 0) {
+                    return res.status(404).json({ message: "Saved scholarship not found" });
+                }
+
+                res.status(200).json({ message: "Removed successfully" });
+            } catch (error) {
+                console.error("Error removing saved scholarship:", error);
+                res.status(500).json({ message: "Internal Server Error" });
+            }
+        });
 
 
 
